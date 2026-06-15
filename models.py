@@ -1,5 +1,4 @@
 
- 
 """
 Parquet Capital — Phases 2 & 3: Forecasting, Valuation, Optimization
 Reads clean_roster.csv and produces:
@@ -89,11 +88,24 @@ def train_quantile_models(train):
     return models
  
  
-def build_aging_lookup(df):
+def build_aging_lookup(df, exclude_latest=False):
     """(pos_group, Age) -> mean aging_curve_delta, recovered from clean_roster.
     Lets the roll-forward refresh the aging signal as a player ages, instead of
-    freezing year-T's value across all three projected seasons."""
+    freezing year-T's value across all three projected seasons.
+ 
+    Leakage note: the aging curve is a STRUCTURAL prior (how the average player
+    at a position/age changes year over year), not a per-player label, so fitting
+    it across all seasons is defensible — a player's own future BPM is never used
+    as a training target here, only the population's historical year-over-year
+    deltas. For strict purity, `exclude_latest=True` drops the most recent season
+    (the one being forecast from) so no projected season contributes to the
+    curve it is later scored against. The two differ negligibly because aging
+    cells pool hundreds of player-seasons; the flag exists so the choice is
+    explicit and auditable rather than implicit.
+    """
     a = df.dropna(subset=["aging_curve_delta"])
+    if exclude_latest and "season" in a.columns and len(a):
+        a = a[a["season"] < int(df["season"].max())]
     lut = (a.groupby(["pos_group", "Age"])["aging_curve_delta"].mean())
     return lut.to_dict()
  
@@ -144,7 +156,8 @@ def _advance_features(feat, p50, pos, aging_lut, sensitivities):
     return feat
  
  
-def forecast_three_seasons(df, models, band_widen=None, sensitivities=None):
+def forecast_three_seasons(df, models, band_widen=None, sensitivities=None,
+                           exclude_latest_in_aging=False):
     """Roll the median forecast forward 3 seasons, advancing the FULL feature
     vector at each step (not just BPM and Age):
       - Age      : +1 each season
@@ -153,12 +166,21 @@ def forecast_three_seasons(df, models, band_widen=None, sensitivities=None):
       - aging_curve_delta       : refreshed from the (pos_group, new Age) curve
       - injury_events_3yr       : decayed toward 0 (the 3yr window rolls forward)
     band_widen scales the band each step; pass calibrated factors from
-    calibrate_band_widening() to get empirically honest coverage."""
+    calibrate_band_widening() to get empirically honest coverage.
+ 
+    Leakage stance: in a LIVE forecast nothing is held out — we project forward
+    FROM the latest season and never score against it — so the aging curve may
+    safely include every season. `exclude_latest_in_aging=True` is offered only
+    so a reviewer can confirm the live numbers barely move when the most recent
+    season is dropped from the structural aging prior; it is not needed for
+    correctness. Every BACKTEST path already fits aging/sensitivities on
+    past-only data (see evaluate_multistep / _multistep_band_scale / the
+    valuation backtest, all of which slice df[season <= base])."""
     if band_widen is None:
         band_widen = {1: 1.0, 2: 1.4, 3: 1.8}
     if sensitivities is None:
         sensitivities = _DEFAULT_SENS
-    aging_lut = build_aging_lookup(df)
+    aging_lut = build_aging_lookup(df, exclude_latest=exclude_latest_in_aging)
  
     latest = (df.sort_values("season").groupby("name_key").tail(1).copy())
     latest = latest.dropna(subset=FEATURES)
@@ -759,6 +781,7 @@ def main():
     print("\nsample overvalued flags:")
     print(ov.nlargest(5, "salary_m")[["Player", "Team", "Age", "salary_m",
           "current_bpm", "valuation_flag"]].to_string(index=False))
-
+ 
+ 
 if __name__ == "__main__":
     main()
