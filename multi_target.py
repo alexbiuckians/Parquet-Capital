@@ -228,7 +228,6 @@ def cross_target_agreement(df, verbose=True):
         print(f"verdict: {verdict}")
     return summary, cross
 
-
 def main():
     ap = argparse.ArgumentParser(description="BPM-vs-VORP valuation robustness.")
     ap.add_argument("--out", default=M.OUT, help="folder with clean_roster.csv")
@@ -236,7 +235,6 @@ def main():
     M.OUT = args.out
     df = M.load()
     cross_target_agreement(df)
-
 
 if __name__ == "__main__":
     main()
