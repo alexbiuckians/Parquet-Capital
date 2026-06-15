@@ -1,4 +1,3 @@
-
 """
 Parquet Capital — Phases 2 & 3: Forecasting, Valuation, Optimization
 Reads clean_roster.csv and produces:
@@ -286,21 +285,108 @@ def evaluate_multistep(df, horizons=(1, 2, 3)):
     return "multi-step roll-forward backtest:\n  " + "\n  ".join(lines)
  
  
-def calibrate_band_widening(train, nominal=0.80):
-    """Empirically calibrate the t+1/t+2/t+3 band-widening factors so the
-    quantile bands actually cover ~`nominal` of held-out outcomes, instead of
-    using hand-picked 1.0/1.4/1.8 multipliers.
+def _scale_for_coverage(lo_gap, hi_gap, resid, nominal):
+    """Find the symmetric band scale s such that the fraction of residuals
+    falling inside [-(lo_gap*s), +(hi_gap*s)] about the median hits `nominal`.
+    lo_gap = p50-p10, hi_gap = p90-p50, resid = actual - p50 (all per-row).
+    Bisection on s; returns (s, achieved_coverage)."""
+    lo_gap = np.asarray(lo_gap); hi_gap = np.asarray(hi_gap)
+    resid = np.asarray(resid)
+ 
+    def coverage(s):
+        return np.mean((resid >= -lo_gap * s) & (resid <= hi_gap * s))
+ 
+    lo_s, hi_s, s = 0.2, 6.0, 1.0
+    for _ in range(40):
+        s = 0.5 * (lo_s + hi_s)
+        if coverage(s) < nominal:
+            lo_s = s
+        else:
+            hi_s = s
+    return s, coverage(s)
+ 
+ 
+def _multistep_band_scale(df, horizon, nominal=0.80):
+    """Measure the band scale needed at a GIVEN HORIZON from the ACTUAL
+    roll-forward, rather than assuming sqrt(h). Trains quantile models strictly
+    before the evaluation window, rolls each player's full feature vector forward
+    `horizon` steps (the same _advance_features path production uses), and finds
+    the scale that brings the rolled p10-p90 band to `nominal` coverage of the
+    realized BPM `horizon` seasons later.
+ 
+    Returns (scale, coverage, n_pairs) or (None, None, 0) if there is not enough
+    held-out history to evaluate this horizon honestly."""
+    max_season = int(df["season"].max())
+    base = max_season - horizon            # last season the model may learn from
+    if base < int(df["season"].min()) + 1:
+        return None, None, 0
+ 
+    d = df.sort_values(["name_key", "season"]).copy()
+    d["target_bpm"] = d.groupby("name_key")["BPM"].shift(-1)
+    d["next_season"] = d.groupby("name_key")["season"].shift(-1)
+    tr = d[(d["next_season"] == d["season"] + 1) & (d["season"] < base)]
+    tr = tr.dropna(subset=FEATURES + ["target_bpm"])
+    if len(tr) < 100:
+        return None, None, 0
+ 
+    qm = {}
+    for q, name in [(0.1, "p10"), (0.5, "p50"), (0.9, "p90")]:
+        m = GradientBoostingRegressor(loss="quantile", alpha=q, n_estimators=200,
+                                      max_depth=3, learning_rate=0.05,
+                                      subsample=0.8, random_state=42)
+        m.fit(tr[FEATURES], tr["target_bpm"])
+        qm[name] = m
+ 
+    aging_lut = build_aging_lookup(df[df["season"] <= base])
+    sens = _estimate_stat_sensitivities(tr.assign(
+        **{f"next_{s}": d.groupby("name_key")[s].shift(-1)
+           for s in ["PER", "WS_per_48", "VORP", "USG%"] if s in d.columns}))
+    truth = df.set_index(["name_key", "season"])["BPM"].to_dict()
+    seed = df[df["season"] == base].dropna(subset=FEATURES)
+ 
+    lo_gaps, hi_gaps, resids = [], [], []
+    for _, r in seed.iterrows():
+        feat = r[FEATURES].to_dict()
+        pos = r["pos_group"]
+        p10 = p50 = p90 = None
+        for step in range(1, horizon + 1):
+            X = pd.DataFrame([feat])[FEATURES]
+            p50 = float(qm["p50"].predict(X)[0])
+            p10 = float(qm["p10"].predict(X)[0])
+            p90 = float(qm["p90"].predict(X)[0])
+            _advance_features(feat, p50, pos, aging_lut, sens)
+        actual = truth.get((r["name_key"], base + horizon))
+        if actual is None or np.isnan(actual):
+            continue
+        lo_gaps.append(p50 - p10); hi_gaps.append(p90 - p50)
+        resids.append(actual - p50)
+    if len(resids) < 20:
+        return None, None, len(resids)
+ 
+    s, cov = _scale_for_coverage(lo_gaps, hi_gaps, resids, nominal)
+    return round(float(s), 3), float(cov), len(resids)
+ 
+ 
+def calibrate_band_widening(train, nominal=0.80, df=None):
+    """Calibrate the t+1/t+2/t+3 band-widening factors so the quantile bands
+    actually cover ~`nominal` of held-out outcomes, instead of hand-picked
+    multipliers.
  
     Method:
-      1. Time-split: train quantile models on all but the last 2 seasons.
-      2. On the held-out seasons, measure the t+1 (one-step) coverage of the
-         raw p10-p90 band and find the scale `s1` that brings empirical coverage
-         to `nominal` (bisection on a symmetric scaling about the median).
-      3. For t+2 / t+3 we have no direct multi-step labels in a single shift,
-         so we scale s1 by the ratio of forecast horizons' error growth, which
-         we estimate as sqrt(h) random-walk widening anchored to the measured
-         t+1 scale. This replaces the arbitrary 1.4/1.8 with a principled,
-         data-anchored progression.
+      1. t+1 is calibrated directly: train quantile models on all but the last
+         two seasons, then find the scale that brings the one-step p10-p90 band
+         to `nominal` coverage on the held-out seasons (bisection about median).
+      2. t+2 / t+3 are calibrated against the ACTUAL multi-step roll-forward
+         when enough held-out history exists (see _multistep_band_scale): we
+         roll the full feature vector forward h steps exactly as production does
+         and measure the scale each horizon truly needs. This replaces the
+         sqrt(h) assumption with a measured factor.
+      3. sqrt(h) random-walk widening is retained ONLY as an explicit fallback
+         for horizons with too little held-out history to measure, and the
+         report says which horizons were measured vs. assumed.
+ 
+    `df` (the full player-season panel) is required for the measured t+2/t+3
+    path; without it the function falls back to sqrt(h) and labels it as such.
     Returns (band_widen_dict, report_string)."""
     cut = train["season"].max() - 1
     tr, te = train[train.season < cut], train[train.season >= cut]
@@ -320,30 +406,33 @@ def calibrate_band_widening(train, nominal=0.80):
     p90 = qm["p90"].predict(te[FEATURES])
     y = te["target_bpm"].to_numpy()
  
-    def coverage(s):
-        lo = p50 - (p50 - p10) * s
-        hi = p50 + (p90 - p50) * s
-        return np.mean((y >= lo) & (y <= hi))
+    raw_cov = np.mean((y >= p10) & (y <= p90))
+    s1, cal_cov = _scale_for_coverage(p50 - p10, p90 - p50, y - p50, nominal)
  
-    raw_cov = coverage(1.0)
-    # bisection for the scale that hits nominal coverage
-    lo_s, hi_s = 0.2, 4.0
-    s1 = 1.0
-    for _ in range(40):
-        s1 = 0.5 * (lo_s + hi_s)
-        if coverage(s1) < nominal:
-            lo_s = s1
+    # --- t+2 / t+3: measure from the real roll-forward where we can ---
+    band = {1: round(float(s1), 3)}
+    source = {1: "measured (1-step holdout)"}
+    cov_by_h = {1: cal_cov}
+    for h in (2, 3):
+        s_h, cov_h, n_h = (None, None, 0)
+        if df is not None:
+            s_h, cov_h, n_h = _multistep_band_scale(df, h, nominal=nominal)
+        if s_h is not None:
+            band[h] = s_h
+            source[h] = f"measured (roll-forward, n={n_h})"
+            cov_by_h[h] = cov_h
         else:
-            hi_s = s1
-    cal_cov = coverage(s1)
+            band[h] = round(float(s1) * np.sqrt(h), 3)
+            source[h] = "assumed (sqrt(h) fallback - insufficient holdout)"
+            cov_by_h[h] = None
  
-    # random-walk horizon widening anchored to the calibrated t+1 scale
-    band = {1: round(s1, 3),
-            2: round(s1 * np.sqrt(2), 3),
-            3: round(s1 * np.sqrt(3), 3)}
+    cov_str = "/".join(f"{cov_by_h[h]:.0%}" if cov_by_h[h] is not None else "n/a"
+                       for h in (1, 2, 3))
     report = (f"band calibration: raw t+1 coverage {raw_cov:.0%} -> "
               f"calibrated {cal_cov:.0%} (target {nominal:.0%}); "
-              f"widen factors t1/t2/t3 = {band[1]}/{band[2]}/{band[3]}")
+              f"widen factors t1/t2/t3 = {band[1]}/{band[2]}/{band[3]}; "
+              f"achieved coverage t1/t2/t3 = {cov_str}; "
+              f"t2 {source[2]}, t3 {source[3]}")
     return band, report
  
  
@@ -477,8 +566,6 @@ def value_players(forecasts, verbose=False):
             flags.append("Fair Value")
  
     f["comp_dollar_per_value"] = comp_rates
-    # back-compat alias: the app reads comp_dollar_per_bpm
-    f["comp_dollar_per_bpm"] = comp_rates
     f["valuation_flag"] = flags
  
     # ------------------------------------------------------------------
@@ -633,7 +720,7 @@ def main():
  
     # calibrate the band-widening factors against held-out coverage, and fit how
     # the supporting rate stats co-move with BPM for the roll-forward
-    band_widen, band_report = calibrate_band_widening(train)
+    band_widen, band_report = calibrate_band_widening(train, df=df)
     print(band_report)
     sens = _estimate_stat_sensitivities(train)
     print("stat sensitivities d(stat)/d(BPM):",
@@ -648,8 +735,7 @@ def main():
  
     print(f"forecasted players: {len(forecasts):,}")
  
-    # demo: optimize a real team's roster
-# demo: optimize a real team's roster against team + free-agent pool
+    # demo: optimize a real team's roster against team + free-agent pool
     team_abbr = "GSW"
     sample_team = valued[valued.Team == team_abbr]
     # build a pool big enough to satisfy the 13-man + position-minimum constraints
@@ -666,7 +752,7 @@ def main():
             
     # top overvalued findings (for the README key findings)
     ov = valued[valued.valuation_flag == "Overvalued"].copy()
-    ov["overpay_ratio"] = ov["salary_m"] / (ov["comp_dollar_per_bpm"]
+    ov["overpay_ratio"] = ov["salary_m"] / (ov["comp_dollar_per_value"]
                                             * ov["current_bpm"].clip(lower=0.1))
     print("\nsample overvalued flags:")
     print(ov.nlargest(5, "salary_m")[["Player", "Team", "Age", "salary_m",
