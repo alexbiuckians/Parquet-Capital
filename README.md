@@ -63,7 +63,7 @@ The optimizer's upside vs. floor rosters expose the **risk premium**: the projec
 ## Run locally
 Paths are configurable but optional. By default, build_dataset.py and models.py read the three raw CSVs from — and write clean_roster.csv into a parquet_out/ folder next to — the scripts themselves, so the app finds the data no matter what directory you launch it from. No code editing or environment setup is required if the raw CSVs sit alongside the scripts.
 
-pip install -r requirements_HardwoodGreeks.txt
+pip install -r requirements_parquetcapital.txt
 
 # 1. build the dataset (writes parquet_out/clean_roster.csv next to the script)
 python build_dataset.py
@@ -93,3 +93,5 @@ Data acquired from these three sources:
 https://www.kaggle.com/datasets/jacquesoberweis/2016-2025-nba-injury-data; 
 https://www.kaggle.com/datasets/ratin21/nba-player-stats-and-salaries-2010-2025
 https://www.kaggle.com/datasets/jacquesoberweis/2016-2025-nba-player-advanced-season-stats
+https://www.basketball-reference.com/contracts/
+https://www.basketball-reference.com/contracts/players.html
