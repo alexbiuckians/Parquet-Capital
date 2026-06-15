@@ -47,18 +47,18 @@ st.markdown(f"""
   div[data-testid="stRadio"] label,
   div[data-testid="stRadio"] label p {{ color:#B8C0CC !important; }}
   hr {{ border-color:{LINE}; }}
-
+ 
   /* Make inactive tabs easier to read */
   button[data-baseweb="tab"] p {{
       color: #8FA3C4 !important;
       font-weight: 500 !important;
   }}
-
+ 
   button[data-baseweb="tab"][aria-selected="true"] p {{
       color: #FF4B4B !important;
       font-weight: 700 !important;
   }}
-
+ 
   button[data-baseweb="tab"]:hover p {{
       color: #EAE6DD !important;
   }}
@@ -81,6 +81,18 @@ def load_everything():
     forecasts = M.forecast_three_seasons(df, models, band_widen=band_widen,
                                          sensitivities=sens)
     valued = M.value_players(forecasts)
+ 
+    # Surface the uncertainty the validation layer already computes, per player:
+    #   confidence_label  — from this player's own t+1 band width
+    #   vorp_flag / agreement_label — does a 2nd independent target (VORP) agree?
+    # Additive only; production value_players output is untouched.
+    try:
+        import ui_confidence as UC
+        valued = UC.attach_all(valued, df)
+    except Exception:
+        valued["confidence_label"] = "Unknown"
+        valued["vorp_flag"] = "n/a"
+        valued["agreement_label"] = "n/a"
  
     # current team/season = each player's most recent season on record
     latest = df.sort_values("season").groupby("name_key").tail(1)[["name_key", "Team", "season"]]
@@ -166,7 +178,7 @@ with st.sidebar:
 roster = VAL[(VAL["current_team"] == team) & (VAL["is_current"])].copy()
 def concern_score(row):
     score = 0
-
+ 
     if row["valuation_flag"] == "Overvalued":
         score += 100
     elif row["valuation_flag"] == "Fair Value":
@@ -175,40 +187,40 @@ def concern_score(row):
         score -= 25
     elif row["valuation_flag"] == "Elite (max-tier) - ceiling-capped":
         score -= 10
-
+ 
     if row["multiyear_flag"] == "Overvalued (multi-yr)":
         score += 60
     elif row["multiyear_flag"] == "Undervalued (multi-yr)":
         score -= 20
-
+ 
     if row["injury_risk_tier"] == "High":
         score += 25
     elif row["injury_risk_tier"] == "Medium":
         score += 10
-
+ 
     score += row["salary_m"] * 0.5
-
+ 
     return score
-
+ 
 roster["concern_score"] = roster.apply(concern_score, axis=1)
 roster = roster.sort_values("concern_score", ascending=False)
-
+ 
 # top metrics
 c1, c2, c3, c4 = st.columns(4)
 spend = roster["salary_m"].sum()
 cap_m = CAP / 1_000_000
 cap_space = cap_m - spend
-
+ 
 if cap_space >= 0:
     salary_label = f"${spend:.0f}M / ${cap_m:.0f}M"
     salary_sub = f"Salary committed | ${cap_space:.0f}M under cap"
 else:
     salary_label = f"${spend:.0f}M / ${cap_m:.0f}M"
     salary_sub = f"Salary committed | ${abs(cap_space):.0f}M over cap"
-
+ 
 n_over = (roster["valuation_flag"] == "Overvalued").sum()
 n_high = (roster["injury_risk_tier"] == "High").sum()
-
+ 
 for col, val, lab in [
     (c1, f"{len(roster)}", "Players"),
     (c2, salary_label, salary_sub),
@@ -218,6 +230,43 @@ for col, val, lab in [
     col.markdown(f'<div class="metric-card"><div class="v">{val}</div>'
                  f'<div class="l">{lab}</div></div>', unsafe_allow_html=True)
 st.markdown("<br>", unsafe_allow_html=True)
+def explain_player_flag(p):
+    reasons = []
+ 
+    if p["valuation_flag"] == "Overvalued":
+        reasons.append("salary is high relative to comparable projected value")
+    elif p["valuation_flag"] == "Undervalued":
+        reasons.append("projected value appears strong relative to salary")
+    elif p["valuation_flag"] == "Fair Value":
+        reasons.append("salary is broadly in line with comparable projected value")
+ 
+    if p["bpm_t3_p50"] < p["current_bpm"]:
+        reasons.append("the three-season BPM projection trends downward")
+    elif p["bpm_t3_p50"] > p["current_bpm"]:
+        reasons.append("the three-season BPM projection trends upward")
+ 
+    if p["injury_risk_tier"] == "High":
+        reasons.append("injury risk is elevated")
+    elif p["injury_risk_tier"] == "Medium":
+        reasons.append("injury risk is moderate")
+ 
+    if p["Age"] >= 32:
+        reasons.append("age increases decline risk")
+    elif p["Age"] <= 24:
+        reasons.append("age leaves room for development upside")
+ 
+    if p["salary_m"] >= 20:
+        reasons.append("current salary creates meaningful cap exposure")
+    elif p["salary_m"] <= 5:
+        reasons.append("low salary limits downside risk")
+ 
+    if len(reasons) == 0:
+        return "No major valuation, projection, or injury-risk concern is driving this profile."
+ 
+    return "Flagged because " + ", ".join(reasons[:-1]) + (
+        f", and {reasons[-1]}." if len(reasons) > 1 else f"{reasons[-1]}."
+    )
+ 
 st.markdown(
     f"""
     <div class="verdict">
@@ -238,9 +287,11 @@ tab1, tab2, tab3, tab4 = st.tabs(
 with tab1:
     show = roster[["Player", "pos_group", "Age", "salary_m", "current_bpm",
                    "bpm_t1_p50", "bpm_t3_p50", "valuation_flag",
+                   "confidence_label", "agreement_label",
                    "multiyear_flag", "years_remaining", "injury_risk_tier"]].copy()
     show.columns = ["Player", "Pos", "Age", "Salary $M", "BPM now",
-                    "BPM +1", "BPM +3", "Valuation", "Multi-yr", "Yrs left", "Injury risk"]
+                    "BPM +1", "BPM +3", "Valuation", "Confidence", "2nd-metric",
+                    "Multi-yr", "Yrs left", "Injury risk"]
     for c in ["Salary $M", "BPM now", "BPM +1", "BPM +3"]:
         show[c] = show[c].round(1)
     show["Yrs left"] = show["Yrs left"].fillna(0).astype(int)
@@ -252,58 +303,93 @@ with tab1:
     def color_risk(v):
         return (f"color:{RED}" if v == "High"
                 else f"color:{AMBER}" if v == "Medium" else f"color:{GREEN}")
+    def color_conf(v):
+        return (f"color:{GREEN}" if v == "High"
+                else f"color:{AMBER}" if v == "Moderate"
+                else f"color:{RED}" if v == "Low" else f"color:{MUTE}")
+    def color_agree(v):
+        return (f"color:{GREEN}" if v == "Confirmed"
+                else f"color:{AMBER}" if v == "Mixed"
+                else f"color:{RED};font-weight:700" if v == "Contradicts"
+                else f"color:{MUTE}")
     styled = (show.style
               .map(color_flag, subset=["Valuation"])
               .map(color_risk, subset=["Injury risk"])
+              .map(color_conf, subset=["Confidence"])
+              .map(color_agree, subset=["2nd-metric"])
               .format({"Salary $M": "{:.1f}", "BPM now": "{:+.1f}",
                        "BPM +1": "{:+.1f}", "BPM +3": "{:+.1f}"}))
     st.dataframe(styled, use_container_width=True, height=430, hide_index=True)
+    st.caption("Confidence = width of this player's own projection band (wide = "
+               "low). 2nd-metric = whether an independent target (VORP) reaches "
+               "the same verdict. A red 'Contradicts' means the call is "
+               "target-dependent — do not act on it from this tool alone.")
     st.markdown("#### Front Office Takeaways")
     over = roster[roster["valuation_flag"] == "Overvalued"].head(3)
     under = roster[roster["valuation_flag"] == "Undervalued"].head(3)
     high_risk = roster[roster["injury_risk_tier"] == "High"].head(3)
-
+ 
     top_over = over.iloc[0]["Player"] if len(over) else "No clear overvalued contract"
     top_under = under.iloc[0]["Player"] if len(under) else "No clear undervalued player"
     top_risk = high_risk.iloc[0]["Player"] if len(high_risk) else "No high-risk player"
-
+ 
     st.markdown(
         f"""
         <div class="verdict">
         <b>Contract risk:</b> {top_over} grades as one of the biggest concerns based on salary, projected value, and valuation flag.<br><br>
-
+ 
         <b>Best value:</b> {top_under} appears underpriced relative to comparable projected value.<br><br>
-
+ 
         <b>Medical risk:</b> {top_risk} carries one of the highest injury-risk concerns on this roster.
         </div>
         """,
         unsafe_allow_html=True
     )
-
+ 
     st.markdown("#### Player detail")
     pick = st.selectbox("Inspect a player", roster["Player"].tolist())
     pr = roster[roster["Player"] == pick].iloc[0]
+    why_flagged = explain_player_flag(pr)
+    try:
+        import ui_confidence as UC
+        caveat = UC.confidence_sentence(pr)
+    except Exception:
+        caveat = ""
+    # t+1 band string + VORP second-opinion line for the card
+    band_str = (f'{pr["bpm_t1_p10"]:+.1f} to {pr["bpm_t1_p90"]:+.1f}'
+                if pd.notna(pr.get("bpm_t1_p10")) else "n/a")
+    vorp_line = (f'{pr.get("vorp_flag", "n/a")} '
+                 f'({pr.get("agreement_label", "n/a")})')
+ 
     st.markdown(
         f"""
         <div class="verdict">
         <h3>{pr["Player"]}</h3>
-
+ 
         <b>Position:</b> {pr["pos_group"]}<br>
         <b>Age:</b> {pr["Age"]}<br>
         <b>Salary:</b> ${pr["salary_m"]:.1f}M<br><br>
-
+ 
         <b>Current BPM:</b> {pr["current_bpm"]:+.1f}<br>
-        <b>Projected BPM +1:</b> {pr["bpm_t1_p50"]:+.1f}<br>
+        <b>Projected BPM +1:</b> {pr["bpm_t1_p50"]:+.1f}
+            <span style="color:{MUTE}">(10–90 band: {band_str})</span><br>
         <b>Projected BPM +3:</b> {pr["bpm_t3_p50"]:+.1f}<br><br>
-
-        <b>Valuation:</b> {pr["valuation_flag"]}<br>
+ 
+        <b>Valuation (BPM):</b> {pr["valuation_flag"]}
+            &nbsp;·&nbsp; <b>Confidence:</b> {pr.get("confidence_label","Unknown")}<br>
+        <b>2nd metric (VORP):</b> {vorp_line}<br>
         <b>Multi-year valuation:</b> {pr["multiyear_flag"]}<br>
         <b>Years remaining:</b> {pr["years_remaining"]}<br>
-        <b>Injury risk:</b> {pr["injury_risk_tier"]}
+        <b>Injury risk:</b> {pr["injury_risk_tier"]}<br><br>
+ 
+        <b>Why flagged:</b> {why_flagged}<br><br>
+        <span style="color:{MUTE}">{caveat}</span>
         </div>
         """,
         unsafe_allow_html=True
     )
+    st.markdown("<br>", unsafe_allow_html=True)
+    
     dc1, dc2 = st.columns([3, 2])
     with dc1:
         traj = pd.DataFrame({
