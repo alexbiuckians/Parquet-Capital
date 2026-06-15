@@ -1,4 +1,3 @@
-
 """
 Parquet Capital — Validation & Tuning (additive module)
 =======================================================
