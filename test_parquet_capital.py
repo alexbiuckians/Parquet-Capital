@@ -1,4 +1,3 @@
-
 """
 Parquet Capital — test suite
 ============================
