@@ -1,4 +1,3 @@
-
 """
 Parquet Capital — Front Office Dashboard
 Roster valuation, player forecasts, live cap optimization, and a trade simulator,
@@ -48,6 +47,21 @@ st.markdown(f"""
   div[data-testid="stRadio"] label,
   div[data-testid="stRadio"] label p {{ color:#B8C0CC !important; }}
   hr {{ border-color:{LINE}; }}
+
+  /* Make inactive tabs easier to read */
+  button[data-baseweb="tab"] p {{
+      color: #8FA3C4 !important;
+      font-weight: 500 !important;
+  }}
+
+  button[data-baseweb="tab"][aria-selected="true"] p {{
+      color: #FF4B4B !important;
+      font-weight: 700 !important;
+  }}
+
+  button[data-baseweb="tab"]:hover p {{
+      color: #EAE6DD !important;
+  }}
 </style>
 <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 """, unsafe_allow_html=True)
@@ -62,7 +76,7 @@ def load_everything():
     train = M.build_training_table(df)
     models = M.train_quantile_models(train)
     backtest = M.evaluate(train, models)
-    band_widen, _ = M.calibrate_band_widening(train)
+    band_widen, _ = M.calibrate_band_widening(train, df=df)
     sens = M._estimate_stat_sensitivities(train)
     forecasts = M.forecast_three_seasons(df, models, band_widen=band_widen,
                                          sensitivities=sens)
@@ -77,6 +91,31 @@ def load_everything():
     max_season = int(df["season"].max())
     valued["is_current"] = valued["last_season"] == max_season
     return df, valued, backtest, models
+ 
+ 
+@st.cache_resource
+def load_validation():
+    """Run the (slower) validation suite once and cache it: out-of-sample
+    quantile calibration and the held-out valuation-decision backtest. Imported
+    lazily so the dashboard still loads if validation.py is absent."""
+    try:
+        import validation as V
+    except Exception as e:  # pragma: no cover - defensive
+        return {"error": f"validation module unavailable: {e}"}
+    df_v = M.load()
+    train_v = M.build_training_table(df_v)
+    out = {}
+    try:
+        out["calibration"] = V.quantile_calibration(train_v, verbose=False)
+    except Exception as e:
+        out["calibration"] = None
+        out["cal_error"] = str(e)
+    try:
+        summary, report = V.backtest_valuations(df_v, verbose=False)
+        out["bt_summary"], out["bt_report"] = summary, report
+    except Exception as e:
+        out["bt_summary"], out["bt_report"] = None, str(e)
+    return out
  
  
 # Friendly failure if the dataset hasn't been built yet, instead of a raw traceback.
@@ -125,23 +164,73 @@ with st.sidebar:
                 unsafe_allow_html=True)
  
 roster = VAL[(VAL["current_team"] == team) & (VAL["is_current"])].copy()
-roster = roster.sort_values("salary_m", ascending=False)
- 
+def concern_score(row):
+    score = 0
+
+    if row["valuation_flag"] == "Overvalued":
+        score += 100
+    elif row["valuation_flag"] == "Fair Value":
+        score += 40
+    elif row["valuation_flag"] == "Undervalued":
+        score -= 25
+    elif row["valuation_flag"] == "Elite (max-tier) - ceiling-capped":
+        score -= 10
+
+    if row["multiyear_flag"] == "Overvalued (multi-yr)":
+        score += 60
+    elif row["multiyear_flag"] == "Undervalued (multi-yr)":
+        score -= 20
+
+    if row["injury_risk_tier"] == "High":
+        score += 25
+    elif row["injury_risk_tier"] == "Medium":
+        score += 10
+
+    score += row["salary_m"] * 0.5
+
+    return score
+
+roster["concern_score"] = roster.apply(concern_score, axis=1)
+roster = roster.sort_values("concern_score", ascending=False)
+
 # top metrics
 c1, c2, c3, c4 = st.columns(4)
 spend = roster["salary_m"].sum()
+cap_m = CAP / 1_000_000
+cap_space = cap_m - spend
+
+if cap_space >= 0:
+    salary_label = f"${spend:.0f}M / ${cap_m:.0f}M"
+    salary_sub = f"Salary committed | ${cap_space:.0f}M under cap"
+else:
+    salary_label = f"${spend:.0f}M / ${cap_m:.0f}M"
+    salary_sub = f"Salary committed | ${abs(cap_space):.0f}M over cap"
+
 n_over = (roster["valuation_flag"] == "Overvalued").sum()
 n_high = (roster["injury_risk_tier"] == "High").sum()
+
 for col, val, lab in [
     (c1, f"{len(roster)}", "Players"),
-    (c2, f"${spend:.0f}M", "Salary committed"),
+    (c2, salary_label, salary_sub),
     (c3, f"{n_over}", "Overvalued contracts"),
-    (c4, f"{n_high}", "High injury risk")]:
+    (c4, f"{n_high}", "High injury risk")
+]:
     col.markdown(f'<div class="metric-card"><div class="v">{val}</div>'
                  f'<div class="l">{lab}</div></div>', unsafe_allow_html=True)
- 
 st.markdown("<br>", unsafe_allow_html=True)
-tab1, tab2, tab3 = st.tabs(["Roster Valuation", "Cap Optimizer", "Trade Simulator"])
+st.markdown(
+    f"""
+    <div class="verdict">
+    <b>Valuation note:</b> Elite max-tier players are ceiling-capped. 
+    They are not automatically labeled Overvalued just because they have max-level salaries. 
+    The model reserves Overvalued flags for contracts whose salary is high relative to comparable projected value.
+    </div>
+    """,
+    unsafe_allow_html=True
+)
+st.markdown("<br>", unsafe_allow_html=True)
+tab1, tab2, tab3, tab4 = st.tabs(
+    ["Roster Valuation", "Cap Optimizer", "Trade Simulator", "Model Validation"])
  
 # ----------------------------------------------------------------------
 # Tab 1 — valuation table + player detail
@@ -154,7 +243,7 @@ with tab1:
                     "BPM +1", "BPM +3", "Valuation", "Multi-yr", "Yrs left", "Injury risk"]
     for c in ["Salary $M", "BPM now", "BPM +1", "BPM +3"]:
         show[c] = show[c].round(1)
- 
+    show["Yrs left"] = show["Yrs left"].fillna(0).astype(int)
     def color_flag(v):
         return (f"color:{RED};font-weight:700" if v == "Overvalued"
                 else f"color:{GREEN};font-weight:700" if v == "Undervalued"
@@ -202,8 +291,8 @@ with tab1:
                     f'<span style="color:{MUTE};font-size:.88rem">'
                     f'Age {int(pr.Age)} · {pr.pos_group} · injury risk '
                     f'<b>{pr.injury_risk_tier}</b><br>'
-                    f'Comp rate ${pr.comp_dollar_per_bpm:.1f}M per value point'
-                    if not pd.isna(pr.comp_dollar_per_bpm) else
+                    f'Comp rate ${pr.comp_dollar_per_value:.1f}M per value point'
+                    if not pd.isna(pr.comp_dollar_per_value) else
                     f'<div class="verdict">{flag_html(pr.valuation_flag)}<br>'
                     f'<span style="color:{MUTE};font-size:.88rem">Age {int(pr.Age)} · {pr.pos_group}'
                     f'</span></div>', unsafe_allow_html=True)
@@ -281,6 +370,89 @@ with tab3:
                     f'{out_player}: {flag_html(o.valuation_flag)} · '
                     f'{in_player}: {flag_html(i.valuation_flag)}</span></div>',
                     unsafe_allow_html=True)
+ 
+# ----------------------------------------------------------------------
+# Tab 4 — model validation (calibration + held-out decision backtest)
+# ----------------------------------------------------------------------
+with tab4:
+    st.markdown("Out-of-sample evidence that the engine does what it claims — "
+                "shown on held-out seasons the models never trained on.")
+    V = load_validation()
+    if V.get("error"):
+        st.warning(V["error"])
+    else:
+        vc1, vc2 = st.columns([1, 1])
+ 
+        # --- quantile calibration reliability diagram ---
+        with vc1:
+            st.markdown("#### Quantile band calibration")
+            cal = V.get("calibration")
+            if cal is not None and len(cal):
+                ideal = pd.DataFrame({"nominal": [0, 1], "empirical": [0, 1]})
+                diag = alt.Chart(ideal).mark_line(
+                    color=MUTE, strokeDash=[4, 4]).encode(
+                    x=alt.X("nominal", title="Predicted quantile",
+                            axis=alt.Axis(labelColor=MUTE, titleColor=MUTE)),
+                    y=alt.Y("empirical", title="Empirical coverage",
+                            axis=alt.Axis(labelColor=MUTE, titleColor=MUTE)))
+                pts = alt.Chart(cal).mark_point(
+                    color=AMBER, filled=True, size=90).encode(
+                    x="nominal", y="empirical")
+                ln = alt.Chart(cal).mark_line(color=AMBER).encode(
+                    x="nominal", y="empirical")
+                st.altair_chart((diag + ln + pts).properties(
+                    height=260, background=PANEL,
+                    title=alt.TitleParams("Reliability — on the dashed line = calibrated",
+                                          color=CHALK, fontSize=15, anchor="middle")),
+                    use_container_width=True)
+                st.caption(f"Mean |empirical − nominal| = "
+                           f"{cal['abs_error'].mean():.3f} (0 = perfect).")
+            else:
+                st.info("Calibration unavailable: " + V.get("cal_error", "n/a"))
+ 
+        # --- valuation decision backtest ---
+        with vc2:
+            st.markdown("#### Do the flags hold up out-of-sample?")
+            bt = V.get("bt_summary")
+            if bt is not None and len(bt):
+                disp = bt.rename(columns={
+                    "flag": "Flag", "n": "N",
+                    "median_salary_m": "Median $M",
+                    "median_realized_value": "Realized value",
+                    "median_realized_dollar_per_value": "Realized $/value"})
+                st.dataframe(disp.round(2), use_container_width=True,
+                             hide_index=True)
+                st.caption("Realized **$/value** is actual next-season cost per "
+                           "delivered value point. A working engine ranks "
+                           "Overvalued > Fair > Undervalued — you pay most per "
+                           "delivered unit on the contracts it flagged.")
+                try:
+                    o = bt.loc[bt.flag == "Overvalued",
+                               "median_realized_dollar_per_value"].iloc[0]
+                    fv = bt.loc[bt.flag == "Fair Value",
+                                "median_realized_dollar_per_value"].iloc[0]
+                    u = bt.loc[bt.flag == "Undervalued",
+                               "median_realized_dollar_per_value"].iloc[0]
+                    if o > fv > u:
+                        st.markdown(
+                            f'<div class="verdict"><span style="color:{GREEN};'
+                            f'font-weight:700">✓ Signal confirmed</span><br>'
+                            f'<span style="color:{MUTE};font-size:.88rem">'
+                            f'Overvalued ${o:.2f} &gt; Fair ${fv:.2f} &gt; '
+                            f'Undervalued ${u:.2f} per delivered value point.'
+                            f'</span></div>', unsafe_allow_html=True)
+                    else:
+                        st.markdown(
+                            f'<div class="verdict"><span style="color:{AMBER};'
+                            f'font-weight:700">~ Mixed signal</span><br>'
+                            f'<span style="color:{MUTE};font-size:.88rem">'
+                            f'Ordering not fully monotone on this sample — '
+                            f'reported honestly rather than overclaimed.'
+                            f'</span></div>', unsafe_allow_html=True)
+                except (IndexError, KeyError):
+                    pass
+            else:
+                st.info("Backtest unavailable: " + str(V.get("bt_report", "n/a")))
  
 st.markdown("---")
 st.markdown(f'<p style="color:{MUTE};font-size:.76rem">Built on 4,860 player-seasons '
