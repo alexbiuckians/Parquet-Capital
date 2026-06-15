@@ -258,11 +258,52 @@ with tab1:
               .format({"Salary $M": "{:.1f}", "BPM now": "{:+.1f}",
                        "BPM +1": "{:+.1f}", "BPM +3": "{:+.1f}"}))
     st.dataframe(styled, use_container_width=True, height=430, hide_index=True)
- 
+    st.markdown("#### Front Office Takeaways")
+    over = roster[roster["valuation_flag"] == "Overvalued"].head(3)
+    under = roster[roster["valuation_flag"] == "Undervalued"].head(3)
+    high_risk = roster[roster["injury_risk_tier"] == "High"].head(3)
+
+    top_over = over.iloc[0]["Player"] if len(over) else "No clear overvalued contract"
+    top_under = under.iloc[0]["Player"] if len(under) else "No clear undervalued player"
+    top_risk = high_risk.iloc[0]["Player"] if len(high_risk) else "No high-risk player"
+
+    st.markdown(
+        f"""
+        <div class="verdict">
+        <b>Contract risk:</b> {top_over} grades as one of the biggest concerns based on salary, projected value, and valuation flag.<br><br>
+
+        <b>Best value:</b> {top_under} appears underpriced relative to comparable projected value.<br><br>
+
+        <b>Medical risk:</b> {top_risk} carries one of the highest injury-risk concerns on this roster.
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
     st.markdown("#### Player detail")
     pick = st.selectbox("Inspect a player", roster["Player"].tolist())
     pr = roster[roster["Player"] == pick].iloc[0]
- 
+    st.markdown(
+        f"""
+        <div class="verdict">
+        <h3>{pr["Player"]}</h3>
+
+        <b>Position:</b> {pr["pos_group"]}<br>
+        <b>Age:</b> {pr["Age"]}<br>
+        <b>Salary:</b> ${pr["salary_m"]:.1f}M<br><br>
+
+        <b>Current BPM:</b> {pr["current_bpm"]:+.1f}<br>
+        <b>Projected BPM +1:</b> {pr["bpm_t1_p50"]:+.1f}<br>
+        <b>Projected BPM +3:</b> {pr["bpm_t3_p50"]:+.1f}<br><br>
+
+        <b>Valuation:</b> {pr["valuation_flag"]}<br>
+        <b>Multi-year valuation:</b> {pr["multiyear_flag"]}<br>
+        <b>Years remaining:</b> {pr["years_remaining"]}<br>
+        <b>Injury risk:</b> {pr["injury_risk_tier"]}
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
     dc1, dc2 = st.columns([3, 2])
     with dc1:
         traj = pd.DataFrame({
