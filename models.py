@@ -1,3 +1,5 @@
+
+ 
 """
 Parquet Capital — Phases 2 & 3: Forecasting, Valuation, Optimization
 Reads clean_roster.csv and produces:
@@ -757,7 +759,6 @@ def main():
     print("\nsample overvalued flags:")
     print(ov.nlargest(5, "salary_m")[["Player", "Team", "Age", "salary_m",
           "current_bpm", "valuation_flag"]].to_string(index=False))
- 
- 
+
 if __name__ == "__main__":
     main()
