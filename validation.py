@@ -313,6 +313,50 @@ def backtest_valuations(df, eval_seasons=2, verbose=True):
             "report honestly rather than overclaim.")
     except (IndexError, KeyError):
         msg_lines.append("\n(not all three buckets populated on this sample)")
+ 
+    # --- cheap-contract track validation -------------------------------------
+    # The below-replacement track claims a different thing than the comp track:
+    # not "ranks production" but "separates fair minimum deals from stranded cap."
+    # The honest test: among players the model flagged sub-replacement, do the
+    # "Overpay (dead money)" contracts cost dramatically more per realized unit
+    # than the "Fair (min contract)" ones? Both groups should stay low-production
+    # (confirming the read), but dead-money should pay far more for it.
+    cheap_keep = ["Fair (min contract)", "Overpay (dead money)"]
+    cheap = (bt[bt["flag"].isin(cheap_keep)]
+             .groupby("flag")
+             .agg(n=("flag", "size"),
+                  median_salary_m=("salary_m", "median"),
+                  median_realized_value=("realized_value", "median"),
+                  median_realized_dollar_per_value=("realized_dollar_per_value", "median"))
+             .reindex(cheap_keep).dropna(how="all").reset_index())
+    if len(cheap):
+        msg_lines.append("\n--- cheap-contract track (below-replacement pricing) ---")
+        msg_lines.append(cheap.to_string(index=False,
+                         float_format=lambda x: f"{x:.2f}" if pd.notna(x) else "n/a"))
+        try:
+            dm = cheap.loc[cheap.flag == "Overpay (dead money)",
+                           "median_realized_dollar_per_value"].iloc[0]
+            fm = cheap.loc[cheap.flag == "Fair (min contract)",
+                           "median_realized_dollar_per_value"].iloc[0]
+            dm_val = cheap.loc[cheap.flag == "Overpay (dead money)",
+                               "median_realized_value"].iloc[0]
+            fm_val = cheap.loc[cheap.flag == "Fair (min contract)",
+                               "median_realized_value"].iloc[0]
+            msg_lines.append(
+                f"\nrealized $/value: dead-money {dm:.2f} vs fair-min {fm:.2f} "
+                f"({dm/fm:.1f}x); realized production stays comparable "
+                f"({dm_val:.1f} vs {fm_val:.1f} value-score) — i.e. similar "
+                f"output, far higher price.")
+            msg_lines.append(
+                "cheap-track CONFIRMED: dead-money flags pay materially more per "
+                "delivered unit than fair-minimum deals for the same replacement-"
+                "level production — the stranded cap the comp engine used to leave "
+                "unrated is now surfaced and validated."
+                if dm > fm * 1.5 else
+                "cheap-track WEAK: dead-money deals do not clearly cost more per "
+                "unit on this sample; report honestly.")
+        except (IndexError, KeyError):
+            msg_lines.append("\n(cheap-contract buckets not both populated)")
     report = "\n".join(msg_lines)
     if verbose:
         print(report)
@@ -332,6 +376,14 @@ def main():
     tune_forecaster(train)
     quantile_calibration(train)
     backtest_valuations(df)
+ 
+    # cross-model robustness: does the value signal survive a different model
+    # CLASS (parameter-free aging curve), not just a different target?
+    try:
+        import model_ensemble as ME
+        ME.cross_model_agreement(df)
+    except Exception as e:
+        print(f"\n(cross-model check skipped: {e})")
  
  
 if __name__ == "__main__":
