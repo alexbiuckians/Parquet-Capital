@@ -1,4 +1,3 @@
-
 """
 Parquet Capital — Phases 2 & 3: Forecasting, Valuation, Optimization
 Reads clean_roster.csv and produces:
@@ -478,6 +477,30 @@ VALUE_FLOOR = 0.5           # value-score floor at replacement level
 # below this value score, $/value is too noise-dominated to price a contract
 MIN_VALUE_FOR_PRICING = 1.0
  
+# --- cheap-contract (below-replacement) track --------------------------------
+# The comp engine abstains on below-replacement players because salary / value
+# is noise-dominated there — a correct call. But abstaining LEAVES TWO-THIRDS OF
+# THE LEAGUE UNRATED, and that gap hides real signal: a min-salary player at
+# replacement level is a perfectly FAIR contract, while a $25M player at the same
+# production is dead money. When production is flat, the SALARY side carries the
+# whole verdict, so we judge these contracts against an absolute minimum-salary
+# benchmark instead of a $/value ratio. This is a deliberately different pricing
+# model (price floor, not comp ratio) for a population the comp model cannot
+# serve — not a forcing of noisy ratios.
+#
+# Benchmark: the league minimum / rookie-scale band, recovered data-drivenly as a
+# low percentile of the salary distribution so it tracks the cap environment
+# rather than a hard-coded dollar figure. A below-replacement player AT or NEAR
+# that floor is "Fair (min contract)"; clearly ABOVE the band a sub-replacement
+# salary is stranded money and reads "Overpay (dead money)". The two are split at
+# the MEDIAN salaried wage, not a small multiple of the floor: paying a fully
+# replaceable player MORE than the median NBA salary is the honest definition of
+# an overpay, while anything up to the median is within normal role-player range
+# and stays "Fair". This keeps the dead-money label for genuine stranded cap
+# (the $10M+ flat veterans) rather than flagging ordinary $2-3M role deals.
+MIN_SALARY_PCTL = 0.15      # ~league-minimum / rookie-scale band (the "fair floor")
+DEAD_MONEY_PCTL = 0.50      # above the median salaried wage on sub-repl prod = overpay
+ 
 # --- max-contract ceiling-cap handling ---------------------------------------
 # The comp pool has no salary tier ABOVE the league max, so any elite producer on
 # a max contract is necessarily compared against cheaper players and reads
@@ -541,6 +564,16 @@ def value_players(forecasts, verbose=False):
     else:
         max_tier_salary, elite_bpm = np.inf, np.inf
  
+    # Min-salary floor for the cheap-contract track, recovered from the salaried
+    # population (all players with a real salary, not just priceable ones — the
+    # below-replacement guys ARE the ones we are pricing here, so they belong in
+    # the floor estimate). Tracks the league-minimum / rookie-scale band.
+    salaried = f[(f["salary_m"] > 0) & f["salary_m"].notna()]
+    min_floor = (salaried["salary_m"].quantile(MIN_SALARY_PCTL)
+                 if len(salaried) else 0.0)
+    dead_money_line = (salaried["salary_m"].quantile(DEAD_MONEY_PCTL)
+                       if len(salaried) else np.inf)
+ 
     # progressively looser (age_band, value_band) tiers; None value_band = position-only
     TIERS = [(2, 2), (3, 3), (4, 4), (5, 6), (6, None)]
     MIN_COMPS = 3
@@ -553,8 +586,16 @@ def value_players(forecasts, verbose=False):
             flags.append("Unrated (no salary)")
             continue
         if not r["priceable"]:
+            # Below-replacement production: the comp/ratio model is noise here, so
+            # we price on the SALARY side against the league-minimum floor instead.
+            # A sub-replacement player at/near the min is a fair contract; one on
+            # real money is dead cap. This is the cheap-contract track — a price-
+            # floor model, not a forced $/value ratio.
             comp_rates.append(np.nan)
-            flags.append("Below replacement - not priced")
+            if r["salary_m"] <= dead_money_line:
+                flags.append("Fair (min contract)")
+            else:
+                flags.append("Overpay (dead money)")
             continue
         # Ceiling-cap abstention: elite production on a max-tier salary. The comp
         # pool has no higher-paid tier to price this against, so a comp call would
@@ -633,8 +674,13 @@ def value_players(forecasts, verbose=False):
         # grounds (elite max-tier, below replacement, no salary) rather than emit a
         # verdict the comp set cannot actually support.
         base = r["valuation_flag"]
-        if base in ("Elite (max-tier) - ceiling-capped", "Below replacement - not priced",
-                    "Unrated (no salary)"):
+        if base in ("Elite (max-tier) - ceiling-capped", "Unrated (no salary)",
+                    "Fair (min contract)", "Overpay (dead money)"):
+            # Cheap-contract verdicts (priced on the salary floor) carry across
+            # years too: with flat sub-replacement production the contract value
+            # is dominated by guaranteed dollars, which is exactly what the floor
+            # model already judged. Re-running the comp ratio would re-introduce
+            # noise. Elite max-tier and no-salary keep their honest abstention.
             my_flags.append(base)
             continue
         if pd.isna(cdv) or pd.isna(pool_rate) or pool_rate <= 0:
@@ -656,14 +702,20 @@ def value_players(forecasts, verbose=False):
     f["dead_cap_m"] = f.get("dead_cap_m", np.nan)
     if verbose:
         n = len(f)
+        # "rated" now includes the cheap-contract verdicts: the only genuinely
+        # unrated players are no-salary records and the handful the comp set
+        # cannot serve (insufficient comps, elite max-tier ceiling-capped).
         not_rated = ["Insufficient comps", "Unrated (no salary)",
-                     "Below replacement - not priced",
                      "Elite (max-tier) - ceiling-capped"]
         rated = (~f["valuation_flag"].isin(not_rated)).sum()
         priceable = int(f["priceable"].sum())
+        cheap = int(f["valuation_flag"].isin(
+            ["Fair (min contract)", "Overpay (dead money)"]).sum())
+        deadmoney = int((f["valuation_flag"] == "Overpay (dead money)").sum())
         ceiling = int((f["valuation_flag"] == "Elite (max-tier) - ceiling-capped").sum())
         print(f"valuation coverage: {rated}/{n} rated ({rated/n:.1%}); "
-              f"{priceable} priceable (salary on record AND above replacement); "
+              f"{priceable} comp-priced (above replacement); "
+              f"{cheap} floor-priced below replacement ({deadmoney} dead-money overpays); "
               f"{ceiling} elite max-tier abstained (ceiling-capped); "
               f"flags: {f['valuation_flag'].value_counts().to_dict()}")
     return f
