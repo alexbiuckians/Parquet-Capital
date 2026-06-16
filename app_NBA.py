@@ -1,3 +1,4 @@
+
 """
 Parquet Capital — Front Office Dashboard
 Roster valuation, player forecasts, live cap optimization, and a trade simulator,
@@ -93,6 +94,8 @@ def load_everything():
         valued["confidence_label"] = "Unknown"
         valued["vorp_flag"] = "n/a"
         valued["agreement_label"] = "n/a"
+        valued["aging_flag"] = "n/a"
+        valued["model_agreement_label"] = "n/a"
  
     # current team/season = each player's most recent season on record
     latest = df.sort_values("season").groupby("name_key").tail(1)[["name_key", "Team", "season"]]
@@ -153,8 +156,10 @@ def flag_html(f):
     if f == "Fair Value":  return f'<span class="flag-fair">— Fair Value</span>'
     if f == "Elite (max-tier) - ceiling-capped":
         return (f'<span style="color:{BLUE};font-weight:700">★ Elite — ceiling-capped</span>')
-    if f == "Below replacement - not priced":
-        return f'<span class="flag-fair">· Below replacement</span>'
+    if f == "Overpay (dead money)":
+        return f'<span class="flag-over">▲ Overpay (dead money)</span>'
+    if f == "Fair (min contract)":
+        return f'<span class="flag-fair">— Fair (min contract)</span>'
     return f'<span class="flag-fair">· n/a</span>'
  
  
@@ -187,6 +192,10 @@ def concern_score(row):
         score -= 25
     elif row["valuation_flag"] == "Elite (max-tier) - ceiling-capped":
         score -= 10
+    elif row["valuation_flag"] == "Overpay (dead money)":
+        score += 80      # stranded cap on sub-replacement production
+    elif row["valuation_flag"] == "Fair (min contract)":
+        score += 5       # cheap and replaceable — minor concern at most
  
     if row["multiyear_flag"] == "Overvalued (multi-yr)":
         score += 60
@@ -287,18 +296,19 @@ tab1, tab2, tab3, tab4 = st.tabs(
 with tab1:
     show = roster[["Player", "pos_group", "Age", "salary_m", "current_bpm",
                    "bpm_t1_p50", "bpm_t3_p50", "valuation_flag",
-                   "confidence_label", "agreement_label",
+                   "confidence_label", "agreement_label", "model_agreement_label",
                    "multiyear_flag", "years_remaining", "injury_risk_tier"]].copy()
     show.columns = ["Player", "Pos", "Age", "Salary $M", "BPM now",
                     "BPM +1", "BPM +3", "Valuation", "Confidence", "2nd-metric",
-                    "Multi-yr", "Yrs left", "Injury risk"]
+                    "2nd-model", "Multi-yr", "Yrs left", "Injury risk"]
     for c in ["Salary $M", "BPM now", "BPM +1", "BPM +3"]:
         show[c] = show[c].round(1)
     show["Yrs left"] = show["Yrs left"].fillna(0).astype(int)
     def color_flag(v):
-        return (f"color:{RED};font-weight:700" if v == "Overvalued"
+        return (f"color:{RED};font-weight:700" if v in ("Overvalued", "Overpay (dead money)")
                 else f"color:{GREEN};font-weight:700" if v == "Undervalued"
                 else f"color:{BLUE};font-weight:700" if v == "Elite (max-tier) - ceiling-capped"
+                else f"color:{MUTE}" if v == "Fair (min contract)"
                 else f"color:{BLUE}")
     def color_risk(v):
         return (f"color:{RED}" if v == "High"
@@ -317,13 +327,16 @@ with tab1:
               .map(color_risk, subset=["Injury risk"])
               .map(color_conf, subset=["Confidence"])
               .map(color_agree, subset=["2nd-metric"])
+              .map(color_agree, subset=["2nd-model"])
               .format({"Salary $M": "{:.1f}", "BPM now": "{:+.1f}",
                        "BPM +1": "{:+.1f}", "BPM +3": "{:+.1f}"}))
     st.dataframe(styled, use_container_width=True, height=430, hide_index=True)
     st.caption("Confidence = width of this player's own projection band (wide = "
                "low). 2nd-metric = whether an independent target (VORP) reaches "
-               "the same verdict. A red 'Contradicts' means the call is "
-               "target-dependent — do not act on it from this tool alone.")
+               "the same verdict. 2nd-model = whether a different model class (a "
+               "parameter-free aging curve) reaches the same MULTI-YEAR verdict. "
+               "A red 'Contradicts' in either means the call is target- or "
+               "model-dependent — do not act on it from this tool alone.")
     st.markdown("#### Front Office Takeaways")
     over = roster[roster["valuation_flag"] == "Overvalued"].head(3)
     under = roster[roster["valuation_flag"] == "Undervalued"].head(3)
