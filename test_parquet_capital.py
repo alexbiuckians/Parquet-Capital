@@ -189,10 +189,38 @@ def test_no_salary_player_is_abstained():
     assert set(out["valuation_flag"]) == {"Unrated (no salary)"}
  
  
-def test_below_replacement_player_is_abstained():
-    fc = pd.DataFrame([_forecast_row(name_key="lo", current_bpm=-3.0, salary_m=8.0)])
-    out = M.value_players(fc)
-    assert out.iloc[0]["valuation_flag"] == "Below replacement - not priced"
+def test_below_replacement_min_salary_is_fair_not_abstained():
+    # cheap-contract track: a sub-replacement player at the salary FLOOR is a fair
+    # minimum deal, not an abstention. Build a pool so the median wage is high
+    # enough that an $0.9M player sits below the dead-money line.
+    pool = [_forecast_row(name_key=f"hi{i}", current_bpm=6.0, salary_m=20.0)
+            for i in range(5)]
+    pool.append(_forecast_row(name_key="minguy", current_bpm=-3.0, salary_m=0.9))
+    out = M.value_players(pd.DataFrame(pool)).set_index("name_key")
+    assert out.loc["minguy", "valuation_flag"] == "Fair (min contract)"
+ 
+ 
+def test_below_replacement_big_salary_is_dead_money():
+    # a sub-replacement player on real money (above the median wage) is stranded
+    # cap and must read 'Overpay (dead money)'.
+    pool = [_forecast_row(name_key=f"lo{i}", current_bpm=-3.0, salary_m=0.8)
+            for i in range(5)]
+    pool.append(_forecast_row(name_key="deadweight", current_bpm=-4.0, salary_m=25.0))
+    out = M.value_players(pd.DataFrame(pool)).set_index("name_key")
+    assert out.loc["deadweight", "valuation_flag"] == "Overpay (dead money)"
+ 
+ 
+def test_cheap_track_lifts_coverage_above_replacement_gap():
+    # no priced player should be left with the OLD blanket abstention label; every
+    # salaried below-replacement player now gets a fair/dead-money verdict.
+    pool = [_forecast_row(name_key=f"hi{i}", current_bpm=6.0, salary_m=20.0)
+            for i in range(5)]
+    pool += [_forecast_row(name_key=f"lo{i}", current_bpm=-3.0, salary_m=s)
+             for i, s in enumerate([0.5, 1.0, 6.0, 18.0])]
+    out = M.value_players(pd.DataFrame(pool))
+    assert "Below replacement - not priced" not in set(out["valuation_flag"])
+    sub = out[out["current_bpm"] < M.REPLACEMENT_BPM]["valuation_flag"]
+    assert set(sub).issubset({"Fair (min contract)", "Overpay (dead money)"})
  
  
 def test_priceable_flag_requires_salary_and_above_replacement():
@@ -274,15 +302,13 @@ def test_scale_for_coverage_wider_resid_needs_bigger_scale():
     s_wide, _ = M._scale_for_coverage(lo_gap, hi_gap,
                                       rng.normal(0, 2.0, n), 0.80)
     assert s_wide > s_narrow                 # more dispersion -> wider band
- 
- 
+
 # ----------------------------------------------------------------------
 # multi_target — VORP value score mirrors the BPM one at its own anchor
 # ----------------------------------------------------------------------
 def test_vorp_value_score_at_replacement_is_floor():
     import multi_target as MT
     assert MT._vorp_value_score(MT.VORP_REPLACEMENT) == pytest.approx(MT.VORP_VALUE_FLOOR)
- 
  
 def test_vorp_value_score_is_monotone_and_clamped():
     import multi_target as MT
@@ -291,7 +317,52 @@ def test_vorp_value_score_is_monotone_and_clamped():
     assert np.all(np.diff(vs) >= -1e-9)                       # monotone
     assert MT._vorp_value_score(-3.0) == pytest.approx(MT.VORP_VALUE_FLOOR)  # clamp
  
+# ----------------------------------------------------------------------
+# model_ensemble — the parameter-free aging-curve forecaster (2nd model class)
+# ----------------------------------------------------------------------
+def _mini_panel():
+    # two players, two consecutive seasons each, so build_aging_lookup has cells
+    rows = []
+    for nk, ages, bpms in [("a", (24, 25), (2.0, 3.0)),
+                           ("b", (29, 30), (4.0, 2.0))]:
+        for season, age, bpm in zip((2024, 2025), ages, bpms):
+            rows.append(dict(name_key=nk, Player=nk.upper(), season=season,
+                             Age=age, Team="GSW", pos_group="G", BPM=bpm,
+                             PER=15.0, WS_per_48=0.1, VORP=1.0,
+                             salary_m=10.0, injury_risk_tier="Low",
+                             aging_curve_delta=0.0))
+    return pd.DataFrame(rows)
+ 
+def test_aging_forecaster_advances_bpm_by_aging_delta():
+    import model_ensemble as ME
+    df = _mini_panel()
+    f = ME.AgingCurveForecaster(df)
+    # craft a lookup with a known delta and confirm the roll-forward uses it
+    f.lut = {("G", 30.0): -1.0, ("G", 31.0): -1.0, ("G", 32.0): -1.0}
+    fc = f.forecast(df)
+    row = fc[fc.name_key == "b"].iloc[0]
+    # player b is 30 in latest season, BPM 2.0; one step applies the age-30 delta
+    assert row["bpm_t1_p50"] == pytest.approx(1.0)       # 2.0 + (-1.0)
+    assert row["current_bpm"] == pytest.approx(2.0)
+ 
+def test_aging_forecaster_missing_cell_falls_back_to_flat():
+    import model_ensemble as ME
+    df = _mini_panel()
+    f = ME.AgingCurveForecaster(df)
+    f.lut = {}                                  # no aging information at all
+    fc = f.forecast(df)
+    row = fc[fc.name_key == "a"].iloc[0]
+    # with an empty lookup the projection holds BPM flat (zero delta)
+    assert row["bpm_t1_p50"] == pytest.approx(row["current_bpm"])
+
+def test_aging_forecaster_output_schema_feeds_value_players():
+    import model_ensemble as ME
+    df = _mini_panel()
+    fc = ME.AgingCurveForecaster(df).forecast(df)
+    # the comp engine must run unchanged on this forecast (drop-in second opinion)
+    valued = M.value_players(fc, verbose=False)
+    assert "valuation_flag" in valued.columns
+    assert "multiyear_flag" in valued.columns
  
 if __name__ == "__main__":
     import sys
-    sys.exit(pytest.main([__file__, "-q"]))
