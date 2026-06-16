@@ -1,4 +1,3 @@
-
 """
 Parquet Capital — Front Office Dashboard
 Roster valuation, player forecasts, live cap optimization, and a trade simulator,
