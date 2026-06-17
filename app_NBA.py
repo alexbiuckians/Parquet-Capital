@@ -303,11 +303,23 @@ with tab1:
     for c in ["Salary $M", "BPM now", "BPM +1", "BPM +3"]:
         show[c] = show[c].round(1)
     show["Yrs left"] = show["Yrs left"].fillna(0).astype(int)
+    # Shorten the long ceiling-cap / multi-yr labels so they don't truncate in
+    # the column. We shorten the display strings here and the color helpers below
+    # recognize the shortened forms, so styling stays correct.
+    _SHORTEN = {
+        "Elite (max-tier) - ceiling-capped": "Elite — ceiling-capped",
+        "Overvalued (multi-yr)": "Overvalued",
+        "Undervalued (multi-yr)": "Undervalued",
+        "Fair Value (multi-yr)": "Fair Value",
+        "No multi-year contract": "—",
+    }
+    for c in ["Valuation", "Multi-yr"]:
+        show[c] = show[c].replace(_SHORTEN)
     def color_flag(v):
         return (f"color:{RED};font-weight:700" if v in ("Overvalued", "Overpay (dead money)")
                 else f"color:{GREEN};font-weight:700" if v == "Undervalued"
-                else f"color:{BLUE};font-weight:700" if v == "Elite (max-tier) - ceiling-capped"
-                else f"color:{MUTE}" if v == "Fair (min contract)"
+                else f"color:{BLUE};font-weight:700" if v in ("Elite (max-tier) - ceiling-capped", "Elite — ceiling-capped")
+                else f"color:{MUTE}" if v in ("Fair (min contract)", "—")
                 else f"color:{BLUE}")
     def color_risk(v):
         return (f"color:{RED}" if v == "High"
