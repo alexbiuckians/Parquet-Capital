@@ -302,7 +302,8 @@ def test_scale_for_coverage_wider_resid_needs_bigger_scale():
     s_wide, _ = M._scale_for_coverage(lo_gap, hi_gap,
                                       rng.normal(0, 2.0, n), 0.80)
     assert s_wide > s_narrow                 # more dispersion -> wider band
-
+ 
+ 
 # ----------------------------------------------------------------------
 # multi_target — VORP value score mirrors the BPM one at its own anchor
 # ----------------------------------------------------------------------
@@ -310,12 +311,14 @@ def test_vorp_value_score_at_replacement_is_floor():
     import multi_target as MT
     assert MT._vorp_value_score(MT.VORP_REPLACEMENT) == pytest.approx(MT.VORP_VALUE_FLOOR)
  
+ 
 def test_vorp_value_score_is_monotone_and_clamped():
     import multi_target as MT
     xs = np.linspace(-4, 8, 40)
     vs = MT._vorp_value_score(xs)
     assert np.all(np.diff(vs) >= -1e-9)                       # monotone
     assert MT._vorp_value_score(-3.0) == pytest.approx(MT.VORP_VALUE_FLOOR)  # clamp
+ 
  
 # ----------------------------------------------------------------------
 # model_ensemble — the parameter-free aging-curve forecaster (2nd model class)
@@ -333,6 +336,7 @@ def _mini_panel():
                              aging_curve_delta=0.0))
     return pd.DataFrame(rows)
  
+ 
 def test_aging_forecaster_advances_bpm_by_aging_delta():
     import model_ensemble as ME
     df = _mini_panel()
@@ -345,6 +349,7 @@ def test_aging_forecaster_advances_bpm_by_aging_delta():
     assert row["bpm_t1_p50"] == pytest.approx(1.0)       # 2.0 + (-1.0)
     assert row["current_bpm"] == pytest.approx(2.0)
  
+ 
 def test_aging_forecaster_missing_cell_falls_back_to_flat():
     import model_ensemble as ME
     df = _mini_panel()
@@ -354,7 +359,8 @@ def test_aging_forecaster_missing_cell_falls_back_to_flat():
     row = fc[fc.name_key == "a"].iloc[0]
     # with an empty lookup the projection holds BPM flat (zero delta)
     assert row["bpm_t1_p50"] == pytest.approx(row["current_bpm"])
-
+ 
+ 
 def test_aging_forecaster_output_schema_feeds_value_players():
     import model_ensemble as ME
     df = _mini_panel()
