@@ -4,7 +4,40 @@ This is a portfolio project that demonstrates front-office quantitative judgment
 A front-office decision tool that treats NBA players as financial assets: **it forecasts performance, prices contracts against the market, and optimizes roster construction under the salary cap.**
 
 NBA teams routinely lose tens of millions to "dead cap" by paying for past performance while ignoring aging curves and injury volatility. Parquet Capital flags which contracts are becoming toxic assets before the damage shows up in the standings.
+## What this demonstrates
 
+The spine of this project is one idea — treat human capital as a priced asset,
+then aggressively test whether the price holds up. Depending on what you're
+evaluating for, two things matter:
+
+**Modeling & validation rigor**
+- Quantile forecasting with **coverage-calibrated** uncertainty bands (≈80%
+  empirical coverage at every horizon, calibrated against a real roll-forward —
+  not assumed √h).
+- A **decision-level backtest**, not just an error metric: flagged-overvalued
+  contracts are shown to cost more per delivered value point on held-out
+  seasons (and dead-money flags ~5.7× more than fair-minimum deals).
+- **Robustness over a single noisy target**: the same pipeline re-run on an
+  independent target (VORP) and an independent model class (a parameter-free
+  aging curve), reported with Cohen's κ.
+- **Honest negative results**: hyperparameter tuning beat the defaults by only
+  ~0.01 BPM (within fold noise), and the code says tuning didn't help rather
+  than dressing it up. The real, modest edge — GBM over persistence, ~1.80 vs
+  2.21 t+1 MAE — is stated plainly.
+
+**Domain & product judgment**
+- **Explicit abstention** where the data can't support a verdict: elite max-tier
+  contracts are ceiling-capped instead of auto-flagged Overvalued, and a
+  separate cheap-contract track prices sub-replacement players on the salary
+  floor (Fair-minimum vs. dead-money) rather than a meaningless ratio.
+- **Multi-year contract pricing** — a flat veteran with guaranteed years left is
+  a worse asset than the same production on an expiring deal, and only the
+  multi-year track captures that.
+- **Uncertainty surfaced in the user's language**: each verdict ships with a
+  confidence label and two agreement checks, with an explicit "don't act on this
+  from the tool alone" when a call is soft.
+- Output framed as front-office decisions (contract risk / best value / medical
+  risk), not raw model columns.
 ## What it does
 
 - **Roster valuation table** — every salaried player flagged Overvalued / Fair / Undervalued vs. comparable contracts, with a 3-season BPM projection and an injury-risk tier. Players above replacement are comp-priced; players below replacement are priced on a separate cheap-contract track against the league-minimum salary floor (a min-salary deal reads **Fair (min contract)**, a non-minimum salary on sub-replacement production reads **Overpay (dead money)** — the stranded cap a comp ratio cannot price). Together these lift verdict coverage from ~32% of the league to ~80%; the only genuinely unrated players are no-salary records and the few the comp set cannot serve (insufficient comps, elite max-tier ceiling-capped).
@@ -80,6 +113,8 @@ On the LSTM question: the earlier note about an "LSTM spec" has been resolved in
 
 
 The numeric 80%-coverage target is now backed by a reliability diagram: for each nominal quantile (10/25/50/75/90), the fraction of held-out actuals at or below the model's prediction. On the dashed 45° line = perfectly calibrated. The dashboard renders this in the new Model Validation tab, and the function reports mean |empirical − nominal| as a single calibration score.
+**A note on two coverage numbers**: the band-widening calibration targets and achieves ≈80% central coverage of held-out outcomes (the figure the forecast and dashboard rely on), while the quantile-reliability diagram reports an implied 10–90 central coverage of ≈75% computed from the raw quantile crossings before band-widening is applied. They are not in tension — the first is the post-calibration band you ship, the second is the pre-calibration diagnostic that motivated the widening.
+
 
 
 3. Backtested valuation decisions — validation.py: backtest_valuations()
@@ -116,7 +151,6 @@ On the current data this check lands **MIXED, and that is reported as such rathe
 5. Cross-MODEL robustness — model_ensemble.py: cross_model_agreement()
 The VORP check above swaps the forecast target but keeps the same gradient-boosted machinery, so a systematic bias in that model family would be inherited by both tracks and read as agreement. This addition swaps the **model class** instead: it adds an AgingCurveForecaster — a parameter-free projector that sets next-season BPM to current BPM plus the structural position/age aging delta, with no fitted feature weights and none of the GBM's inductive bias — and runs the unchanged production comp engine on its forecast. The comparison is made on the multi-year flag on purpose: the single-season flag keys off current BPM (shared by both models by construction, so it would trivially agree 100%), whereas the multi-year flag prices the 3-season projection, which is exactly where two model classes genuinely differ. On the current data the two classes reach the same bucket 72% of the time with only **3.4%** direct contradiction and a chance-corrected **κ ≈ 0.52** — higher agreement than the VORP target check **(κ ≈ 0.35)**, and a stronger claim: the value signal survives not just a different stat but a fundamentally different modeling approach. The aging-curve model is also where a future sequence model would slot in as a third independent class
 
-
 Tests — test_parquet_capital.py
 
 45 targeted tests on the correctness-critical paths where a silent bug would corrupt everything downstream: the normalize_name join key (accents, suffixes, slash-aliases, junk input), severity_score ordinal tiers, the trade_is_legal CBA salary-match boundary, _value_score replacement-anchoring and monotonicity, the _advance_features roll-forward step, the value_players abstentions **and the cheap-contract track (fair-minimum vs dead-money splits, and that no salaried below-replacement player is left unrated)**, the optimize_roster hard constraints (cap, roster size, position minimums, the 35%-of-cap rule), the _scale_for_coverage band calibrator (hits the nominal coverage target; wider residuals demand a wider band), the VORP value-score anchor used by the multi-target check, and **the parameter-free AgingCurveForecaster (aging-delta roll-forward, flat fallback on missing cells, and that its output feeds the comp engine unchanged).**
@@ -130,8 +164,6 @@ Tests — test_parquet_capital.py
 - **Elite max-contract handling**: because the comp pool has no salary tier more expensive than the league max, an elite producer on a max contract is necessarily compared against cheaper players and reads "Overvalued" — the flag would otherwise detect "is on a max deal" as much as "is a bad deal." The engine now separates the two on production, not just price: a top-salary-tier contract whose production is also top-tier is flagged **"Elite (max-tier) — ceiling-capped"**, an explicit abstention, because the comp set literally cannot price it higher. A top-tier salary on non-elite production is left to the normal comp logic and still flags Overvalued — that overpay is real, not an artifact. Both thresholds are data-driven (top-decile salary and BPM within the priced pool) rather than fixed dollar figures, so they track the league's actual cap environment. In practice this cleanly splits the two populations the original tool conflated: MVP-tier max deals (Jokić, Giannis, SGA, Curry, Dončić, Tatum) now abstain as ceiling-capped, while genuine dead-cap max deals (Bradley Beal and John Wall at sub-replacement BPM, Ben Simmons, an aged-out Kemba Walker) remain correctly flagged Overvalued.
 
 
-
-
 ## Run locally
 Paths are configurable but optional. By default, build_dataset.py and models.py read the three raw CSVs from — and write clean_roster.csv into a parquet_out/ folder next to — the scripts themselves, so the app finds the data no matter what directory you launch it from. No code editing or environment setup is required if the raw CSVs sit alongside the scripts.
 
@@ -142,7 +174,6 @@ python build_dataset.py
 
 # 2. build forecasts + valuations; prints backtests + calibration report
 python models.py
-
 
 # 3.validate: tuning vs. baselines, quantile calibration, decision backtest
 python validation.py
@@ -184,5 +215,4 @@ Data acquired from these sources:
 https://www.kaggle.com/datasets/jacquesoberweis/2016-2025-nba-injury-data;
 https://www.kaggle.com/datasets/ratin21/nba-player-stats-and-salaries-2010-2025
 https://www.kaggle.com/datasets/jacquesoberweis/2016-2025-nba-player-advanced-season-stats
-https://www.basketball-reference.com/contracts/
 https://www.basketball-reference.com/contracts/players.html
