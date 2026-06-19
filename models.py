@@ -1,3 +1,4 @@
+
 """
 Parquet Capital — Phases 2 & 3: Forecasting, Valuation, Optimization
 Reads clean_roster.csv and produces:
@@ -85,6 +86,36 @@ def train_quantile_models(train):
         m.fit(X, y)
         models[name] = m
     return models
+ 
+ 
+def explain_forecast(models, feature_row, top_n=6):
+    """Per-player explainability for the t+1 median BPM projection.
+ 
+    Returns a list of (feature, shap_value) pairs — the local SHAP attributions
+    for THIS player's median (p50) forecast, sorted by absolute impact — so the
+    UI can say *why* the model projected what it did, not just what it projected.
+    This extends the existing confidence layer from 'how sure' to 'why': the band
+    width says how uncertain the call is, SHAP says which inputs drove it.
+ 
+    `feature_row` is a dict or Series carrying the production FEATURES at the
+    player's latest season (the same vector forecast_three_seasons seeds from).
+    Uses shap.TreeExplainer on the p50 gradient-boosted model — exact for trees,
+    no sampling, and cheap enough to run live per selected player. Returns an
+    empty list (never raises) if shap is unavailable or the row is malformed, so
+    the dashboard degrades gracefully to its existing text explanation."""
+    try:
+        import shap
+    except Exception:
+        return []
+    try:
+        x = pd.DataFrame([{f: float(feature_row[f]) for f in FEATURES}])[FEATURES]
+        explainer = shap.TreeExplainer(models["p50"])
+        sv = explainer.shap_values(x)
+        vals = np.asarray(sv)[0]
+        pairs = sorted(zip(FEATURES, vals), key=lambda t: abs(t[1]), reverse=True)
+        return [(f, float(v)) for f, v in pairs[:top_n]]
+    except Exception:
+        return []
  
  
 def build_aging_lookup(df, exclude_latest=False):
@@ -749,7 +780,18 @@ def optimize_roster(players: pd.DataFrame, cap=154_000_000, mode="upside",
         if p.loc[i, "salary_m"] * 1e6 > 0.35 * cap:
             prob += x[i] == 0
  
-    prob.solve(pulp.PULP_CBC_CMD(msg=0))
+    # CBC solver. Use the bundled PULP_CBC_CMD (ships its own CBC binary) while
+    # it exists; fall back to COIN_CMD only on a future pulp where PULP_CBC_CMD
+    # has been removed (COIN_CMD requires a system-installed CBC). Suppress the
+    # deprecation chatter so the dashboard console stays clean.
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        try:
+            solver = pulp.PULP_CBC_CMD(msg=0)
+        except Exception:
+            solver = pulp.COIN_CMD(msg=0)
+    prob.solve(solver)
     chosen = [i for i in p.index if x[i].value() == 1]
     sel = p.loc[chosen].copy()
     return sel, sel[val_col].sum(), sel["salary_m"].sum()
@@ -836,4 +878,4 @@ def main():
  
  
 if __name__ == "__main__":
-    main()
+    main() 
