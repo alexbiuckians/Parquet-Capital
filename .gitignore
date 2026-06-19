@@ -1,0 +1,17 @@
+cd /path/to/your/repo
+cat > .gitignore << 'EOF'
+# Raw source data — kept local, not redistributed
+NBA_Player_Stats_and_Salaries_2010-2025.csv
+player_advanced.csv
+injury_data.csv
+contracts_clean.xlsx
+
+# Build output — ignore the folder but keep the one deployed file
+parquet_out/*
+!parquet_out/clean_roster.csv
+
+# Python noise
+__pycache__/
+*.pyc
+.DS_Store
+EOF
