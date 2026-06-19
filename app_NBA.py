@@ -1,3 +1,4 @@
+
 """
 Parquet Capital — Front Office Dashboard
 Roster valuation, player forecasts, live cap optimization, and a trade simulator,
@@ -434,6 +435,45 @@ with tab1:
                             f"{pick} — 3-season BPM projection (10th–90th pct)",
                             color=CHALK, fontSize=20, anchor="middle")),
                         use_container_width=True)
+ 
+        # --- Why this projection? Local SHAP attribution for the t+1 median ---
+        # Extends the confidence layer from "how sure" to "why": which inputs
+        # pushed THIS player's next-season BPM up or down. Exact TreeExplainer on
+        # the p50 model; degrades silently to nothing if shap is unavailable.
+        contribs = M.explain_forecast(MODELS, pr)
+        if contribs:
+            _NICE = {"BPM": "Current BPM", "Age": "Age", "PER": "PER",
+                     "WS_per_48": "Win Shares / 48", "VORP": "VORP",
+                     "USG%": "Usage %", "injury_events_3yr": "Injury events (3yr)",
+                     "aging_curve_delta": "Aging-curve delta"}
+            sh = pd.DataFrame(
+                [{"Feature": _NICE.get(f, f), "impact": v} for f, v in contribs])
+            sh["dir"] = np.where(sh["impact"] >= 0, "raises", "lowers")
+            lim = float(np.abs(sh["impact"]).max()) * 1.15 or 1.0
+            shap_chart = alt.Chart(sh).mark_bar().encode(
+                x=alt.X("impact:Q", title="Effect on projected BPM (±)",
+                        scale=alt.Scale(domain=[-lim, lim]),
+                        axis=alt.Axis(labelColor=MUTE, titleColor=MUTE)),
+                y=alt.Y("Feature:N", sort="-x",
+                        axis=alt.Axis(labelColor=CHALK, titleColor=MUTE)),
+                color=alt.Color("dir:N",
+                                scale=alt.Scale(domain=["raises", "lowers"],
+                                                range=[GREEN, RED]),
+                                legend=alt.Legend(title=None, labelColor=MUTE)),
+                tooltip=[alt.Tooltip("Feature:N"),
+                         alt.Tooltip("impact:Q", format="+.2f", title="BPM effect")])
+            st.altair_chart(
+                shap_chart.properties(height=210, background=PANEL,
+                    title=alt.TitleParams(
+                        "Why this projection — feature impact (SHAP)",
+                        color=CHALK, fontSize=16, anchor="middle")),
+                use_container_width=True)
+            st.markdown(
+                f'<span style="color:{MUTE};font-size:.82rem">Local SHAP values for '
+                f'the t+1 median model: green inputs push this player\'s projected '
+                f'BPM up, red inputs pull it down. Magnitudes are in BPM points and '
+                f'sum (with the model baseline) to the median projection above.'
+                f'</span>', unsafe_allow_html=True)
     with dc2:
         st.markdown(f'<div class="metric-card"><div class="v">${pr.salary_m:.1f}M</div>'
                     f'<div class="l">Current salary</div></div>', unsafe_allow_html=True)
