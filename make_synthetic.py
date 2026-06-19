@@ -1,20 +1,21 @@
+
 """Generate a synthetic clean_roster.csv with the exact schema models.py expects,
 so the new tuning / backtest code can be exercised without the private raw CSVs.
 Players follow plausible aging-curve BPM trajectories with noise + injury signal."""
 import numpy as np, pandas as pd, os
-
+ 
 rng = np.random.default_rng(7)
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "parquet_out")
 os.makedirs(OUT, exist_ok=True)
-
+ 
 POS = ["G", "F", "C"]
 SEASONS = list(range(2017, 2026))          # 2017..2025, matches the real span
 N_PLAYERS = 480
-
+ 
 def aging_delta(age):
     # rough real-shape curve: improve into mid-20s, decline after ~30
     return 0.9 - 0.06 * (age - 24) - 0.012 * max(0, age - 30) ** 2 / 4
-
+ 
 rows = []
 for pid in range(N_PLAYERS):
     pos = rng.choice(POS, p=[0.45, 0.4, 0.15])
@@ -25,6 +26,23 @@ for pid in range(N_PLAYERS):
     debut = int(rng.choice(SEASONS[: max(1, len(SEASONS) - 2)]))
     salary = float(np.clip(rng.normal(12, 11), 0.9, 52)) if rng.random() > 0.12 else np.nan
     knee = int(rng.random() < 0.15)
+ 
+    # Multi-year contract terms, mirroring the schema build_dataset.py writes
+    # (contract_total_m / contract_aav_m / years_remaining / dead_cap_m). The
+    # real pipeline matches a subset of players to a multi-year deal; we mirror
+    # that here so the cross-MODEL robustness check (model_ensemble.py) — which
+    # prices the 3-season projection against multi-year contracts and is
+    # otherwise un-exercisable on synthetic data — has decisive players to
+    # compare. Players with no salary, or randomly left unmatched, get NaN terms
+    # exactly as the real unmatched remainder does.
+    if np.isnan(salary) or rng.random() < 0.30:
+        years_remaining = contract_aav_m = contract_total_m = dead_cap_m = np.nan
+    else:
+        years_remaining = int(rng.integers(1, 5))           # 1..4 guaranteed yrs
+        contract_aav_m = float(np.clip(salary * rng.uniform(0.9, 1.15), 0.9, 55))
+        contract_total_m = float(contract_aav_m * years_remaining)
+        dead_cap_m = (float(np.clip(rng.uniform(1, 8), 0, contract_total_m))
+                      if (salary > 6 and rng.random() < 0.15) else np.nan)
     for k in range(career):
         season = debut + k
         if season > 2025:
@@ -49,8 +67,13 @@ for pid in range(N_PLAYERS):
             had_knee_injury=knee,
             aging_curve_delta=aging_delta(age),
             injury_risk_tier=("High" if sev >= 6 else "Medium" if sev >= 2 else "Low"),
+            contract_total_m=contract_total_m,
+            contract_aav_m=contract_aav_m,
+            years_remaining=years_remaining,
+            dead_cap_m=dead_cap_m,
         ))
-
+ 
 df = pd.DataFrame(rows)
 df.to_csv(os.path.join(OUT, "clean_roster.csv"), index=False)
 print(f"wrote {len(df)} player-seasons, {df.name_key.nunique()} players -> {OUT}/clean_roster.csv")
+ 
