@@ -152,7 +152,27 @@ def cross_model_agreement(df, verbose=True):
             if gbm_flag.get(k) in _DECISIVE and aging_flag.get(k) in _DECISIVE]
     if not keys:
         if verbose:
-            print("no players priced decisively by BOTH models")
+            # The cross-MODEL check compares the MULTI-YEAR flag, which requires
+            # forward-looking contract terms (contract_total_m / years_remaining).
+            # Datasets without those columns — notably the synthetic roster from
+            # make_synthetic.py — leave every multi-year flag non-decisive, so the
+            # overlap is empty for a benign reason, not a code fault. Say which.
+            has_contracts = ("contract_total_m" in df.columns
+                             and df["contract_total_m"].notna().any())
+            n_gbm_dec = sum(1 for v in gbm_flag.values() if v in _DECISIVE)
+            n_age_dec = sum(1 for v in aging_flag.values() if v in _DECISIVE)
+            if not has_contracts:
+                print("cross-MODEL check skipped: no multi-year contract terms in "
+                      "this dataset (contract_total_m absent/empty). This check "
+                      "prices the 3-season projection against real multi-year "
+                      "contracts, so it needs that source — it runs on the real "
+                      "roster but not on the synthetic one from make_synthetic.py. "
+                      "The cross-TARGET check (multi_target.py) does run on "
+                      "synthetic data; use it to exercise robustness here.")
+            else:
+                print("no players priced decisively by BOTH models "
+                      f"(GBM decisive: {n_gbm_dec}, aging-curve decisive: "
+                      f"{n_age_dec}; their overlap is empty on this sample)")
         return {"n": 0, "agreement": np.nan}, pd.DataFrame()
  
     g = [_BUCKET[gbm_flag[k]] for k in keys]
