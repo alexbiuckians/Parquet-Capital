@@ -335,7 +335,7 @@ with tab1:
                 else f"color:{RED};font-weight:700" if v == "Contradicts"
                 else f"color:{MUTE}")
     styled = (show.style
-              .map(color_flag, subset=["Valuation", "Multi-yr"])
+              .map(color_flag, subset=["Valuation"])
               .map(color_risk, subset=["Injury risk"])
               .map(color_conf, subset=["Confidence"])
               .map(color_agree, subset=["2nd-metric"])
