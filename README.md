@@ -166,39 +166,39 @@ Paths are configurable but optional. By default, build_dataset.py and models.py 
 
 pip install -r requirements.txt
 
-1. build the dataset (writes parquet_out/clean_roster.csv next to the script)
+# 1. build the dataset (writes parquet_out/clean_roster.csv next to the script)
 
 python build_dataset.py
 
-2. build forecasts + valuations; prints backtests + calibration report
+# 2. build forecasts + valuations; prints backtests + calibration report
 
 python models.py
 
-3.validate: tuning vs. baselines, quantile calibration, decision backtest
+# 3.validate: tuning vs. baselines, quantile calibration, decision backtest
 
 python validation.py
 
-4.  robustness: re-price on a second target (VORP) and check flag agreement
+# 4.  robustness: re-price on a second target (VORP) and check flag agreement
 
 python multi_target.py
 
-4b.cross-model robustness: re-price with a parameter-free aging-curve model and check flag agreement across model classes
+# 4b.cross-model robustness: re-price with a parameter-free aging-curve model and check flag agreement across model classes
 
 python model_ensemble.py
 
-5. dollar-impact: restate the held-out Overvalued signal as $ of avoidable overpay
+# 5. dollar-impact: restate the held-out Overvalued signal as $ of avoidable overpay
 
 python dollar_impact.py
 
-5b. trajectory feature upgrade: build momentum/durability features + honest A/B vs production features
+# 5b. trajectory feature upgrade: build momentum/durability features + honest A/B vs production features
 
 python feature_upgrade.py          # add --write to also emit clean_roster_plus.csv
 
-6. run the test suite (45 tests on the correctness-critical paths)
+# 6. run the test suite (45 tests on the correctness-critical paths)
 
-pytest -q
+test_parquet_capital.py
 
-7. launch the dashboard
+# 7. launch the dashboard
 
 streamlit run app_NBA.py
 
