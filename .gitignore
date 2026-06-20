@@ -1,5 +1,3 @@
-cd /path/to/your/repo
-cat > .gitignore << 'EOF'
 # Raw source data — kept local, not redistributed
 NBA_Player_Stats_and_Salaries_2010-2025.csv
 player_advanced.csv
@@ -14,4 +12,3 @@ parquet_out/*
 __pycache__/
 *.pyc
 .DS_Store
-EOF
