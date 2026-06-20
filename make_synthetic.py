@@ -1,4 +1,3 @@
-
 """Generate a synthetic clean_roster.csv with the exact schema models.py expects,
 so the new tuning / backtest code can be exercised without the private raw CSVs.
 Players follow plausible aging-curve BPM trajectories with noise + injury signal."""
@@ -76,4 +75,10 @@ for pid in range(N_PLAYERS):
 df = pd.DataFrame(rows)
 df.to_csv(os.path.join(OUT, "clean_roster.csv"), index=False)
 print(f"wrote {len(df)} player-seasons, {df.name_key.nunique()} players -> {OUT}/clean_roster.csv")
- 
+print("\n" + "=" * 72)
+print("NOTE: this is SYNTHETIC data for exercising the pipeline, validation, and")
+print("tests without the private raw CSVs. Numbers produced from it are NOT the")
+print("project's results — momentum/durability and contract structure are muted")
+print("by construction, so they understate what the modules find on the real")
+print("roster. The figures that count are the real-roster ones in the README.")
+print("=" * 72)
