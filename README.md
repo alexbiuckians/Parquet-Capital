@@ -4,6 +4,9 @@ This is a portfolio project that demonstrates front-office quantitative judgment
 A front-office decision tool that treats NBA players as financial assets: **it forecasts performance, prices contracts against the market, and optimizes roster construction under the salary cap.**
 
 NBA teams routinely lose tens of millions to "dead cap" by paying for past performance while ignoring aging curves and injury volatility. Parquet Capital flags which contracts are becoming toxic assets before the damage shows up in the standings.
+
+> A note on the numbers in this README. Every figure quoted here — MAE, coverage, the valuation backtest, κ on the robustness checks, the dollar-impact premium — comes from the real roster (4,860 player-seasons, 2017–2025, joined from public sources; see Data). The data is included in the repo and free to use, so cloning and running reproduces these figures directly. The repo also ships make_synthetic.py, a schema-matched synthetic generator — a lightweight smoke-test option that fabricates a same-shape roster so the pipeline, validation, and tests can run without loading the full dataset. Synthetic output is for exercising the machinery only — momentum, durability, and contract structure are muted by construction, so its numbers are not the project's results and will look weaker than the real-roster figures below. The generator prints this caveat when it runs.
+
 ## What this demonstrates
 
 The spine of this project is one idea — treat human capital as a priced asset, then aggressively test whether the price holds up. Depending on what you're evaluating for, two things matter:
@@ -11,7 +14,7 @@ The spine of this project is one idea — treat human capital as a priced asset,
 **Modeling & validation rigor**
 - Quantile forecasting with **coverage-calibrated** uncertainty bands (≈80% empirical coverage at every horizon, calibrated against a real roll-forward — not assumed √h).
 - A **decision-level backtest**, not just an error metric: flagged-overvalued contracts are shown to cost more per delivered value point on held-out seasons (and dead-money flags ~5.7× more than fair-minimum deals).
-- **Robustness over a single noisy target**: the same pipeline re-run on an independent target (VORP) and an independent model class (a parameter-free aging curve), reported with Cohen's κ.
+- **Robustness over a single noisy target**:the same pipeline re-run on an independent target (VORP) and an independent model class (a parameter-free aging curve), reported with Cohen's κ.
 - **Honest negative results**: hyperparameter tuning beat the defaults by only ~0.01 BPM (within fold noise), and the code says tuning didn't help rather than dressing it up. The real, modest edge — GBM over persistence, ~1.80 vs 2.21 t+1 MAE — is stated plainly.
 
 **Domain & product judgment**
@@ -166,39 +169,39 @@ Paths are configurable but optional. By default, build_dataset.py and models.py 
 
 pip install -r requirements.txt
 
-# 1. build the dataset (writes parquet_out/clean_roster.csv next to the script)
+1. build the dataset (writes parquet_out/clean_roster.csv next to the script)
 
 python build_dataset.py
 
-# 2. build forecasts + valuations; prints backtests + calibration report
+2. build forecasts + valuations; prints backtests + calibration report
 
 python models.py
 
-# 3.validate: tuning vs. baselines, quantile calibration, decision backtest
+3.validate: tuning vs. baselines, quantile calibration, decision backtest
 
 python validation.py
 
-# 4.  robustness: re-price on a second target (VORP) and check flag agreement
+4.  robustness: re-price on a second target (VORP) and check flag agreement
 
 python multi_target.py
 
-# 4b.cross-model robustness: re-price with a parameter-free aging-curve model and check flag agreement across model classes
+4b.cross-model robustness: re-price with a parameter-free aging-curve model and check flag agreement across model classes
 
 python model_ensemble.py
 
-# 5. dollar-impact: restate the held-out Overvalued signal as $ of avoidable overpay
+5. dollar-impact: restate the held-out Overvalued signal as $ of avoidable overpay
 
 python dollar_impact.py
 
-# 5b. trajectory feature upgrade: build momentum/durability features + honest A/B vs production features
+5b. trajectory feature upgrade: build momentum/durability features + honest A/B vs production features
 
 python feature_upgrade.py          # add --write to also emit clean_roster_plus.csv
 
-# 6. run the test suite (45 tests on the correctness-critical paths)
+6. run the test suite (45 tests on the correctness-critical paths)
 
-test_parquet_capital.py
+test_parquet_capital.py 
 
-# 7. launch the dashboard
+7. launch the dashboard
 
 streamlit run app_NBA.py
 
@@ -232,3 +235,4 @@ https://www.kaggle.com/datasets/ratin21/nba-player-stats-and-salaries-2010-2025
 https://www.kaggle.com/datasets/jacquesoberweis/2016-2025-nba-player-advanced-season-stats
 https://www.basketball-reference.com/contracts/
 https://www.basketball-reference.com/contracts/players.html
+I am permitted to use this data and to include it in this repository, and anyone is free to use it for running the project.
